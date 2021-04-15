@@ -17,6 +17,8 @@ import mimetypes
 import os
 import codecs
 
+from urllib.parse import urlparse
+
 from django.shortcuts import render, render_to_response, redirect
 from django.http import HttpResponse
 from django.utils import timezone
@@ -34,6 +36,7 @@ from django.contrib.auth import logout
 from taskManager.models import Task, Project, Notes, File, UserProfile
 from taskManager.misc import store_uploaded_file
 from taskManager.forms import UserForm, ProjectFileForm, ProfileForm
+from taskManager.utils import haveProjectPermission, haveTaskPermission
 
 
 def manage_tasks(request, project_id):
@@ -175,21 +178,28 @@ def upload(request, project_id):
         form = ProjectFileForm(request.POST, request.FILES)
 
         if form.is_valid():
+
+            # IDOR Patch
+            if not haveProjectPermission(request, proj):
+                return redirect('/taskManager/' + project_id +
+                            '/', {'new_file_added': False})
+
             name = request.POST.get('name', False)
             upload_path = store_uploaded_file(name, request.FILES['file'])
 
             #A1 - Injection (SQLi)
-            curs = connection.cursor()
-            curs.execute(
-                "insert into taskManager_file ('name','path','project_id') values ('%s','%s',%s)" %
-                (name, upload_path, project_id))
+            # curs = connection.cursor()
+            # curs.execute(
+            #     "insert into taskManager_file ('name','path','project_id') values ('%s','%s',%s)" %
+            #     (name, upload_path, project_id))
 
-            # file = File(
-            #name = name,
-            #path = upload_path,
-            # project = proj)
+            # SQLI Patch
+            file = File(
+                        name = name,
+                        path = upload_path,
+                        project = proj)
 
-            # file.save()
+            file.save()
 
             return redirect('/taskManager/' + project_id +
                             '/', {'new_file_added': True})
@@ -242,6 +252,11 @@ def task_create(request, project_id):
     if request.method == 'POST':
 
         proj = Project.objects.get(pk=project_id)
+        
+        # IDOR Patch
+        if not haveProjectPermission(request, proj):
+            return redirect('/taskManager/' + project_id +
+                            '/', {'new_task_added': False})
 
         text = request.POST.get('text', False)
         task_title = request.POST.get('task_title', False)
@@ -298,6 +313,10 @@ def task_edit(request, project_id, task_id):
 
 def task_delete(request, project_id, task_id):
     proj = Project.objects.get(pk=project_id)
+
+    if not haveProjectPermission(request, proj):
+        return redirect('/taskManager/' + project_id + '/')
+
     task = Task.objects.get(pk=task_id)
     if proj is not None:
         if task is not None and task.project == proj:
@@ -374,9 +393,10 @@ def project_edit(request, project_id):
 
 
 def project_delete(request, project_id):
-    # IDOR
     project = Project.objects.get(pk=project_id)
-    project.delete()
+    # IDOR Patch
+    if haveProjectPermission(request, project):
+        project.delete()
     return redirect('/taskManager/dashboard')
 
 # A10: Open Redirect
@@ -384,7 +404,27 @@ def project_delete(request, project_id):
 
 def logout_view(request):
     logout(request)
-    return redirect(request.GET.get('redirect', '/taskManager/'))
+    # return redirect(request.GET.get('redirect', '/taskManager/'))
+
+    # Insecure redirect patch
+
+    return redirect('/taskManager/')
+
+    # url = urlparse(
+    #             request.GET.get('redirect', '/taskManager/'))
+
+    # allowed_host = ['localhost', 'pi.potato.id', None]
+    # if url.hostname not in allowed_host:
+    #     url.hostname = None
+    
+    # path_blacklist_regex = [r'/taskManager/*/project_delete/']
+    # for r in path_blacklist_regex:
+    #     if r.match(url.path):
+    #         return redirect('/taskManager')
+    
+    # return redirect(
+    #             url.geturl())
+    
 
 
 def login(request):
